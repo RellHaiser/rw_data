@@ -1,0 +1,30 @@
+; Exports of rw_data.dll: the decorated __stdcall names with the original ordinals.
+; (MSVC derives the same names from __declspec(dllexport); this file pins the ordinals.)
+LIBRARY rw_data
+EXPORTS
+    _dtaAddDir@8 @1
+    _dtaAddExtension@8 @2
+    _dtaAddFQLExtensionFilter@4 @3
+    _dtaBin2Text@8 @4
+    _dtaClearFQLExtensionFilter@0 @5
+    _dtaClose@4 @6
+    _dtaCloseFQL@0 @7
+    _dtaCloseFileLog@4 @8
+    _dtaCreate@4 @9
+    _dtaCreateFQL@4 @10
+    _dtaDelete@4 @11
+    _dtaDumpMemoryLeaks@4 @12
+    _dtaFQLBegin@4 @13
+    _dtaFQLEnd@0 @14
+    _dtaFlush@4 @15
+    _dtaGetPackDirectAccess@8 @16
+    _dtaGetTime@12 @17
+    _dtaOpen@8 @18
+    _dtaOpenFileLog@8 @19
+    _dtaOpenWrite@8 @20
+    _dtaRead@12 @21
+    _dtaSeek@12 @22
+    _dtaSetCallbackERR@4 @23
+    _dtaSetDebugFQLExt@4 @24
+    _dtaSetPathBeforeLogItems@8 @25
+    _dtaWrite@12 @26
