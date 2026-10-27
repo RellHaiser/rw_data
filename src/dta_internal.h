@@ -228,10 +228,18 @@ constexpr uint16_t CHECKSUM_SEED = 0xFF;
 uint32_t LzssDecompress(const uint8_t *src, uint8_t *dst, uint32_t srcSize,
                         uint32_t dstCapacity);                               // 0x1000ea20
 uint32_t LzssCompress(const uint8_t *src, uint8_t *dst, uint32_t size);      // 0x1000ecd0
+// The original's no-fail decoders, used by dtaRead: they run to the end of the input, which the
+// caller zero-pads by DTA_DECODE_PAD bytes, and return the output count, which can exceed
+// `capacity` (writes past it are dropped).
+constexpr uint32_t DTA_DECODE_PAD = 0x40;
+uint32_t LzssDecompressRetail(const uint8_t *src, uint32_t srcSize, uint8_t *dst, uint32_t out,
+                              uint32_t capacity);                            // 0x1000ea20
 
 // dta_wav.cpp
 uint32_t WavDecompress(const uint8_t *src, uint8_t *dst, uint32_t srcSize,
                        const uint8_t *wavHeader, uint32_t dstCapacity);      // 0x100097f7
+uint32_t WavDecompressRetail(const uint8_t *src, uint32_t srcSize, const uint8_t *wavHeader,
+                             uint8_t *dst, uint32_t capacity);               // 0x100097f7
 
 // dta_open.cpp
 int OpenFromArchives(const char *fileName);                                  // 0x1000c110

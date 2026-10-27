@@ -114,6 +114,53 @@ uint32_t LzssDecompress(const uint8_t *src, uint8_t *dst, uint32_t srcSize, uint
     return out;
 }
 
+// dtaRead's decoder: unlike LzssDecompress it does not stop at the room or at a cut-off token. The
+// original over-read the input (zero pad here), read back-references from before the output (zeros
+// here) and wrote past it (dropped). `out` = where the output starts in `dst`: the wave path's
+// references can reach its header.
+uint32_t LzssDecompressRetail(const uint8_t *src, uint32_t srcSize, uint8_t *dst, uint32_t out,
+                              uint32_t capacity)   // 0x1000ea20
+{
+    const auto put = [&](uint32_t at, uint8_t value) {
+        if (at < capacity)
+            dst[at] = value;
+    };
+    if (src[0] == 0) {
+        for (uint32_t i = 1; i < srcSize; ++i)
+            put(out++, src[i]);
+        return out;
+    }
+    uint16_t flags = static_cast<uint16_t>(src[1] << 8 | src[2]);
+    uint8_t flagsLeft = 16;
+    uint32_t in = 3;
+    while (in < srcSize) {
+        if (flagsLeft == 0) {
+            flags = static_cast<uint16_t>(src[in] << 8 | src[in + 1]);
+            flagsLeft = 16;
+            in += 2;
+        }
+        if ((flags & 0x8000) == 0) {
+            put(out++, src[in++]);
+        } else {
+            const uint32_t distance = src[in] * 16u + (src[in + 1] >> 4);
+            if (distance == 0) {
+                const uint32_t count = src[in + 1] * 0x100u + 0x10 + src[in + 2];
+                for (uint32_t i = 0; i < count; ++i)
+                    put(out++, src[in + 3]);
+                in += 4;
+            } else {
+                const uint32_t length = (src[in + 1] & 0xFu) + 3;
+                for (uint32_t i = 0; i < length; ++i, ++out)
+                    put(out, out >= distance && out - distance < capacity ? dst[out - distance] : 0);
+                in += 2;
+            }
+        }
+        flags = static_cast<uint16_t>(flags << 1);
+        --flagsLeft;
+    }
+    return out;
+}
+
 // Falls back to a stored stream when compressing does not pay. `dst` needs `size` + 6 bytes.
 uint32_t LzssCompress(const uint8_t *src, uint8_t *dst, uint32_t size)   // 0x1000ecd0
 {
