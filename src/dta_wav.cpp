@@ -226,3 +226,44 @@ uint32_t WavDecompress(const uint8_t *src, uint8_t *dst, uint32_t srcSize, const
     }
     return out;
 }
+
+// dtaRead's decoder: no stop at the room, stereo consumes byte pairs (an odd tail decodes one pad
+// byte), the LZ branch runs the original's LZ with back-references into the copied header. Returns
+// at most `capacity`.
+uint32_t WavDecompressRetail(const uint8_t *src, uint32_t srcSize, const uint8_t *wavHeader,
+                             uint8_t *dst, uint32_t capacity)   // 0x100097f7
+{
+    const auto put = [&](uint32_t at, uint8_t value) {
+        if (at < capacity)
+            dst[at] = value;
+    };
+    const int16_t *table = g_wavDeltas[DeltaTable(src[0])];
+    uint32_t out = 0;
+    uint32_t in = 1;
+    if (Read32(src + 1) == Read32(wavHeader) && Read32(src + 0xD) == Read32(wavHeader + 0xC) &&
+        Read32(src + 0x25) == Read32(wavHeader + 0x24)) {
+        for (; out < DTA_WAV_HEADER_SIZE; ++out)
+            put(out, src[1 + out]);
+        in += DTA_WAV_HEADER_SIZE;
+    }
+    if (in < srcSize) {
+        const uint16_t channels = Read16(wavHeader + 0x16);
+        const uint16_t blockAlign = Read16(wavHeader + 0x20);
+        if (channels != 0 && blockAlign / channels == 2) {
+            const uint32_t n = channels == 2 ? 2 : 1;
+            int16_t value[2] = {ReadSample(src + in), ReadSample(src + in + 2)};
+            for (uint32_t i = 0; i < 2 * n; ++i)
+                put(out++, src[in++]);
+            while (in < srcSize) {
+                for (uint32_t c = 0; c < n; ++c) {
+                    value[c] = static_cast<int16_t>(value[c] + Delta(table, src[in++]));
+                    put(out++, static_cast<uint8_t>(value[c]));
+                    put(out++, static_cast<uint8_t>(static_cast<uint16_t>(value[c]) >> 8));
+                }
+            }
+        } else {
+            out = LzssDecompressRetail(src + in, srcSize - in, dst, out, capacity);
+        }
+    }
+    return out < capacity ? out : capacity;
+}

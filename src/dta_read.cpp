@@ -9,7 +9,12 @@ namespace {
 
 // A stored block is at most 0xFFFF bytes plus the type byte. (The original decoded into a
 // 0x8008-byte stack buffer, too small for the largest blocks a 16-bit size allows.)
-constexpr uint32_t RAW_BLOCK_SIZE = 0x10000 + 8;
+constexpr uint32_t RAW_BLOCK_SIZE = 0x10000 + 8 + DTA_DECODE_PAD;
+
+// The original read a block's stored size into its 0x8008-byte stack buffer. Larger ISD0 blocks
+// (and empty ones, which left a stale type byte) make dtaRead fail with -1; for ISD1 a block past
+// the table or of 0x8008 bytes or more fails as a ReadFile error (6).
+constexpr uint32_t RETAIL_BLOCK_LIMIT = 0x8008;
 
 // What dtaRead copies out of the open file at the start (the original kept these in
 // locals); the remaining fields are read from the slot again, as the error callback may
@@ -85,6 +90,15 @@ bool ReadBlock(const S_ReadContext &ctx, uint8_t *raw, uint32_t &blockSize, uint
                bool invalidateOnError, C_DtaLock &lock)
 {
     uint8_t *data = ctx.tables ? raw + 1 : raw;
+    if (ctx.tables ? block >= ctx.tableCount || blockSize >= RETAIL_BLOCK_LIMIT
+                   : blockSize == 0 || blockSize > RETAIL_BLOCK_LIMIT) {
+        if (invalidateOnError)
+            ctx.Slot().bufferValid = false;
+        lock.Unlock();
+        if (ctx.tables)
+            ReportArchiveError(ctx.file, DTA_ERROR_READ);
+        return false;
+    }
     DWORD read = 0;
     if (!ReadFile(ctx.file, data, blockSize, &read, nullptr)) {
         if (invalidateOnError)
@@ -111,28 +125,33 @@ bool ReadBlock(const S_ReadContext &ctx, uint8_t *raw, uint32_t &blockSize, uint
         raw[0] = ctx.TypeOf(block);
         ++blockSize;
     }
+    // The original's decoders read past the block (stale stack bytes); zeros here.
+    std::memset(raw + blockSize, 0, DTA_DECODE_PAD);
     return true;
 }
 
-// Decodes a stored block (raw[0] = type) into `dst`, which has room for `capacity` bytes
-// (a valid block decodes to at most 32 KB); returns the decoded size.
-uint32_t DecodeBlock(const S_ReadContext &ctx, uint8_t *raw, uint32_t blockSize, uint32_t block,
-                     uint8_t *dst, uint32_t capacity)
+// Decodes a stored block (raw[0] = type) into `dst`, which has room for `capacity` bytes (a valid
+// block decodes to at most 32 KB); returns the decoded size, or -1. Damaged blocks decode as in the
+// original, which never compared the result with the expected size; a stored block larger than the
+// room fails.
+int DecodeBlock(const S_ReadContext &ctx, uint8_t *raw, uint32_t blockSize, uint32_t block,
+                uint8_t *dst, uint32_t capacity)
 {
     if (raw[0] == 1)
-        return LzssDecompress(raw, dst, blockSize, capacity);
+        return static_cast<int>(std::min(LzssDecompressRetail(raw, blockSize, dst, 0, capacity), capacity));
     if (raw[0] < 8) {
-        if (blockSize == 0)
-            return 0;   // (the original copied 0xFFFFFFFF bytes)
-        const uint32_t size = std::min(blockSize - 1, capacity);
-        std::memcpy(dst, raw + 1, size);
-        return size;
+        if (blockSize - 1 > capacity)
+            return -1;
+        std::memcpy(dst, raw + 1, blockSize - 1);
+        return static_cast<int>(blockSize - 1);
     }
     // Unless the whole block is encrypted, only the first block's RIFF header is.
     if (block == 0 && !ctx.encrypted)
         DecryptBuffer(raw + 1, DTA_WAV_HEADER_SIZE, ctx.key);
     const std::vector<uint8_t> &header = ctx.Slot().wavHeader;
-    return WavDecompress(raw, dst, blockSize, header.empty() ? nullptr : header.data(), capacity);
+    if (header.empty())   // (the original crashed on the missing header)
+        return static_cast<int>(WavDecompress(raw, dst, blockSize, nullptr, capacity));
+    return static_cast<int>(WavDecompressRetail(raw, blockSize, header.data(), dst, capacity));
 }
 
 // A file in an archive. Returns the bytes read or -1.
@@ -188,7 +207,10 @@ int ReadArchived(const S_ReadContext &ctx, S_DtaCursor &c, uint8_t *dst, uint32_
         uint8_t *block = raw.Get();
         if (!ReadBlock(ctx, block, c.blockSize, c.block, false, lock))
             return -1;
-        c.bufferSize = DecodeBlock(ctx, block, c.blockSize, c.block, ctx.decoded, DTA_BLOCK_SIZE);
+        const int decoded = DecodeBlock(ctx, block, c.blockSize, c.block, ctx.decoded, DTA_BLOCK_SIZE);
+        if (decoded < 0)
+            return -1;
+        c.bufferSize = static_cast<uint32_t>(decoded);
         ctx.Slot().bufferValid = true;
     }
 
@@ -246,7 +268,12 @@ int ReadArchived(const S_ReadContext &ctx, S_DtaCursor &c, uint8_t *dst, uint32_
         uint8_t *block = raw.Get();
         if (!ReadBlock(ctx, block, c.blockSize, c.block, true, lock))
             return -1;
-        c.bufferSize = DecodeBlock(ctx, block, c.blockSize, c.block, dst + done, count - done);
+        const int decoded = DecodeBlock(ctx, block, c.blockSize, c.block, dst + done, count - done);
+        if (decoded < 0) {
+            ctx.Slot().bufferValid = false;
+            return -1;
+        }
+        c.bufferSize = static_cast<uint32_t>(decoded);
         done += c.bufferSize;
         c.position += c.bufferSize;
         if (!ctx.tables)
@@ -273,7 +300,12 @@ int ReadArchived(const S_ReadContext &ctx, S_DtaCursor &c, uint8_t *dst, uint32_
     uint8_t *block = raw.Get();
     if (!ReadBlock(ctx, block, c.blockSize, c.block, true, lock))
         return -1;
-    c.bufferSize = DecodeBlock(ctx, block, c.blockSize, c.block, ctx.decoded, DTA_BLOCK_SIZE);
+    const int decoded = DecodeBlock(ctx, block, c.blockSize, c.block, ctx.decoded, DTA_BLOCK_SIZE);
+    if (decoded < 0) {
+        ctx.Slot().bufferValid = false;
+        return -1;
+    }
+    c.bufferSize = static_cast<uint32_t>(decoded);
     std::memcpy(dst + done, ctx.decoded + c.blockPosition, tail);
     c.position += tail;
     c.blockPosition += tail;
