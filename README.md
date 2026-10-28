@@ -14,3 +14,20 @@ instantiations, replaced here by the standard library. The statically linked deb
 
 How every function works, the archive and FQL file formats and the algorithms are described
 in [docs/rw_data_functions.md](docs/rw_data_functions.md).
+
+## Packing archives
+
+`tools/dta_pack.py` (Python 3.9+, standard library only) packs a folder into an ISD1
+archive that the original DLL and the port read: every file is stored under its path
+relative to the folder (`Tables\items.sav`), LZSS-compressed in 32 KB blocks on all CPU
+cores, and encrypted with the key of one of the game's archives, a custom key or none.
+`PatchX02.dta` and `PatchX03.dta` are mounted by the game before all its own archives but
+are not part of the retail game, so they hold mods without replacing anything.
+
+```bash
+python tools/dta_pack.py
+python tools/dta_pack.py MyMod PatchX02.dta --key PatchX02.dta
+```
+
+The first opens the window; the second packs from the command line (`--key` also takes
+`blank` or `LOW:HIGH` in hex, `--store` turns compression off).
